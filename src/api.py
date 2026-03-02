@@ -33,8 +33,8 @@ async def send_chat(request: Request):
     if not prompt:
         return {"error": "Prompt cannot be empty"}
         
-    # Delegate to the engine (Note: For long running commands, subprocess block shouldn't block main event loop. This is acceptable for MVP.)
-    result = engine.chat(prompt)
+    # Delegate to the engine without blocking the main event loop
+    result = await asyncio.to_thread(engine.chat, prompt)
     return {"result": result, "session_id": engine.session_id}
 
 @app.websocket("/ws")
@@ -50,7 +50,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 command = data[1:]
                 await websocket.send_text(f"> 正在执行系统级别指令: {command}")
                 # For safety, pass to engine to process it rather than evaluating code directly
-                res = engine.chat(f"用户在控制台下发了直接命令: {command}")
+                res = await asyncio.to_thread(engine.chat, f"用户在控制台下发了直接命令: {command}")
                 await websocket.send_text(json.dumps(res, indent=2, ensure_ascii=False))
             else:
                 await websocket.send_text("> 收到普通消息，暂不调用模型。使用 / 作为指令开头。")
