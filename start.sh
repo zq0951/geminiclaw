@@ -15,6 +15,10 @@ echo "==============================================="
 # 确保存放日志的目录存在
 mkdir -p logs
 
+# 执行初次运行配置（如果模板存在且配置不存在）
+echo "> 检查并拆分 Markdown 配置模板 ..."
+python src/init_env.py
+
 # 启动底层后台心跳和反思守护进程
 echo "> 启动 run_daemon.py ..."
 nohup python src/run_daemon.py > logs/daemon.log 2>&1 &

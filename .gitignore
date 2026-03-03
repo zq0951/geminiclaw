@@ -206,3 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 *.pid
+
+.tracked_sessions
+.current_session
+/memory/*
+memory.db
+.history
+config.json
+MEMORY.md
+GEMINI.md
+SOUL.md
+IDENTITY.md
+USER.md
+TOOLS.md

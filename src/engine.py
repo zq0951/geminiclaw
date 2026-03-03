@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import asyncio
+import datetime
 import subprocess
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -8,26 +10,124 @@ logger = logging.getLogger("GeminiEngine")
 
 class GeminiCliAdapter:
     def __init__(self, executable_path="gemini"):
-        self.session_id = None
         self.cmd_base = executable_path
-        # When checking environment or cwd config
         self.cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # geminiclaw root
+        self.session_id = None
+        self.session_file = os.path.join(self.cwd, ".current_session")
+        self.history_dir = os.path.join(self.cwd, ".history")
+        os.makedirs(self.history_dir, exist_ok=True)
+        self._load_session()
 
-    def chat(self, prompt: str) -> dict:
-        """Sends a prompt to the gemini CLI in headless mode."""
+    def _load_session(self):
+        if os.path.exists(self.session_file):
+            try:
+                with open(self.session_file, "r") as f:
+                    self.session_id = f.read().strip()
+                logger.info(f"Loaded session ID from file: {self.session_id}")
+            except Exception as e:
+                logger.error(f"Failed to load session file: {e}")
         
-        # Build the command. 
-        # -y : yolo mode to skip tool confirmations
-        # -o json : enforce json output
-        # -p : prompt
-        cmd = [self.cmd_base, "-y", "-o", "json", "-p", prompt]
+    def _add_to_tracked_sessions(self, sid):
+        tracked_file = os.path.join(self.cwd, ".tracked_sessions")
+        tracked = set()
+        if os.path.exists(tracked_file):
+            try:
+                with open(tracked_file, "r") as f:
+                    tracked = set(f.read().splitlines())
+            except Exception:
+                pass
+        if sid not in tracked:
+            tracked.add(sid)
+            try:
+                with open(tracked_file, "w") as f:
+                    f.write("\n".join(tracked))
+            except Exception:
+                pass
+
+    def _save_session(self, sid):
+        self.session_id = sid
+        try:
+            with open(self.session_file, "w") as f:
+                f.write(sid)
+            self._add_to_tracked_sessions(sid)
+        except Exception as e:
+            logger.error(f"Failed to save session file: {e}")
+
+    def reset_session(self):
+        self.session_id = None
+        if os.path.exists(self.session_file):
+            os.remove(self.session_file)
+        logger.info("Session reset.")
+
+    def set_session(self, sid):
+        self._save_session(sid)
+        logger.info(f"Session manually set to {sid}")
+
+    async def chat_stream(self, prompt: str):
+        """Sends a prompt to the gemini CLI and yields JSONL events."""
+        cmd = [self.cmd_base, "-y", "-o", "stream-json", "-p", prompt]
         
-        # If we already have a session, resume it
         if self.session_id:
             cmd.extend(["-r", self.session_id])
             
-        logger.info(f"Executing gemini cli. Session ID: {self.session_id or 'NEW'}")
+        logger.info(f"Executing gemini cli (stream). Session ID: {self.session_id or 'NEW'}")
         
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=self.cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL
+        )
+
+        full_response_text = ""
+        
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                
+                line_text = line.decode('utf-8').strip()
+                if not line_text:
+                    continue
+                
+                try:
+                    event = json.loads(line_text)
+                    
+                    if event.get("type") == "init":
+                        sid = event.get("session_id")
+                        if sid:
+                            self._save_session(sid)
+                    elif event.get("type") == "message" and event.get("role") == "assistant" and "content" in event:
+                        full_response_text += event["content"]
+                            
+                    yield event
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse JSONL line: {line_text}")
+            
+            await process.wait()
+            
+            if process.returncode != 0:
+                stderr_output = await process.stderr.read()
+                logger.error(f"CLI Error: {stderr_output.decode('utf-8')}")
+                yield {"type": "error", "message": "Subprocess error", "details": stderr_output.decode('utf-8')}
+                
+            if full_response_text:
+                self._log_interaction(prompt, {"response": full_response_text})
+                self._append_history(self.session_id, prompt, full_response_text)
+                
+        except Exception as e:
+            logger.error(f"Error during stream processing: {e}")
+            yield {"type": "error", "message": str(e)}
+
+    def chat(self, prompt: str) -> dict:
+        """Sends a prompt to the gemini CLI in headless mode synchronously. Used by cron and legacy."""
+        cmd = [self.cmd_base, "-y", "-o", "json", "-p", prompt]
+        if self.session_id:
+            cmd.extend(["-r", self.session_id])
+            
+        logger.info(f"Executing gemini cli (sync). Session ID: {self.session_id or 'NEW'}")
         try:
             result = subprocess.run(
                 cmd, 
@@ -42,31 +142,97 @@ class GeminiCliAdapter:
             try:
                 data = json.loads(output)
             except json.JSONDecodeError:
-                logger.error("Failed to parse JSON from CLI output.")
                 return {"error": "JSON parse error", "raw": output}
                 
-            # The exact JSON structure returned by gemini CLI might vary (e.g., depends on gemini configuration)
-            # Typically if using resuming, the gemini cli might echo back the session it used, or we might need 
-            # to parse it carefully if the CLI itself manages sessions. 
-            # Assuming the CLI returns a "session_id" or "session" key for new chats:
             if not self.session_id:
                 if "session" in data:
-                    self.session_id = data["session"]
+                    self._save_session(data["session"])
                 elif "session_id" in data:
-                    self.session_id = data["session_id"]
-                
-                if self.session_id:
-                    logger.info(f"Captured new Session ID: {self.session_id}")
+                    self._save_session(data["session_id"])
+                    
+            self._log_interaction(prompt, data)
+            resp_text = str(data)
+            if isinstance(data, dict):
+                resp_text = data.get("response", json.dumps(data, ensure_ascii=False))
+            self._append_history(self.session_id, prompt, resp_text)
             
             return data
             
         except subprocess.CalledProcessError as e:
-            logger.error(f"Gemini CLI error (return code {e.returncode}):\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}")
             return {"error": "subprocess failed", "stdout": e.stdout, "stderr": e.stderr}
 
-if __name__ == "__main__":
-    adapter = GeminiCliAdapter()
-    print("Testing initial connection and context loading...")
-    # This simple prompt will trigger GEMINI.md reading
-    res = adapter.chat("Please summarize the identity and goals specified in your current directory context. (Respond purely in text)")
-    print(json.dumps(res, indent=2, ensure_ascii=False))
+    def get_sessions(self):
+        """Returns the list of available sessions by calling gemini --list-sessions -o json"""
+        tracked_file = os.path.join(self.cwd, ".tracked_sessions")
+        tracked = set()
+        if os.path.exists(tracked_file):
+            try:
+                with open(tracked_file, "r") as f:
+                    tracked = set(f.read().splitlines())
+            except Exception:
+                pass
+
+        try:
+            result = subprocess.run([self.cmd_base, "--list-sessions", "-o", "json"], cwd=self.cwd, capture_output=True, text=True)
+            lines = result.stdout.strip().split("\n")
+            sessions = []
+            for line in lines:
+                if "[" in line and "]" in line:
+                    parts = line.split("[")
+                    if len(parts) > 1:
+                        sid_part = parts[-1].split("]")[0]
+                        desc_part = parts[0].strip()
+                        if sid_part in tracked:
+                            sessions.append({"id": sid_part, "desc": desc_part})
+            return sessions
+        except Exception as e:
+            logger.error(f"Error listing sessions: {e}")
+            return []
+
+    def _log_interaction(self, prompt, response_data):
+        try:
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            log_dir = os.path.join(self.cwd, "memory")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f"{today}.md")
+            timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+            resp_str = json.dumps(response_data, ensure_ascii=False)
+            if isinstance(response_data, dict) and "response" in response_data:
+                resp_str = response_data["response"]
+
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n### [{timestamp}] Interaction\n")
+                f.write(f"**Prompt**: {prompt}\n\n")
+                f.write(f"**Response**:\n{resp_str}\n\n---\n")
+        except Exception as e:
+            logger.error(f"Failed to log interaction: {e}")
+
+    def _append_history(self, sid, prompt, response):
+        if not sid: return
+        history_file = os.path.join(self.history_dir, f"{sid}.json")
+        history = []
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except Exception:
+                pass
+        history.append({"role": "user", "content": prompt})
+        history.append({"role": "assistant", "content": response})
+        try:
+            with open(history_file, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save history: {e}")
+
+    def get_session_history(self, sid):
+        if not sid: return []
+        history_file = os.path.join(self.history_dir, f"{sid}.json")
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
+

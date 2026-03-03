@@ -2,6 +2,7 @@ import time
 import schedule
 import datetime
 import logging
+from pytz import timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from engine import GeminiCliAdapter
 
@@ -36,7 +37,8 @@ def cleanup_and_reflect_task():
 
 if __name__ == "__main__":
     logger.info("Starting Gemini-Claw Heartbeat Daemon...")
-    scheduler = BackgroundScheduler()
+    # Explicitly set timezone to avoid deprecated /etc/timezone warning
+    scheduler = BackgroundScheduler(timezone=timezone('Asia/Shanghai'))
     
     # Run the heartbeat every 30 minutes
     scheduler.add_job(heartbeat_task, 'interval', minutes=30)

@@ -1,18 +1,31 @@
 import { useEffect, useState, useRef } from 'react';
-import { Terminal, Activity, Menu, Cpu } from 'lucide-react';
+import { Terminal, Menu, Cpu, FileText, LogOut } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Login } from './Login';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
-function App() {
-  const [logs, setLogs] = useState<{ id: number, text: string, type: string }[]>([
+function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
+  const checkAuth = (res: Response) => {
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token');
+      onAuthFail();
+      return false;
+    }
+    return true;
+  };
+  const [logs, setLogs] = useState<{ id: number, text: string, type: string, isMarkdown?: boolean }[]>([
     { id: 1, text: ">> 正在初始化终端引擎...", type: "sys" }
   ]);
   const [input, setInput] = useState('');
   const [sysStatus, setSysStatus] = useState({ state: 'connecting', sessionId: 'Waiting' });
+  const [skills, setSkills] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<{ id: string, desc: string }[]>([]);
   const terminalRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -21,7 +34,8 @@ function App() {
     // 处理开发环境 Vite proxy 和生产环境直连的不同
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.port === "5173" ? "127.0.0.1:8000" : window.location.host;
-    const wsUrl = `${wsProtocol}//${host}/ws`;
+    const token = localStorage.getItem('auth_token') || '';
+    const wsUrl = `${wsProtocol}//${host}/ws?token=${token}`;
 
     const socket = new WebSocket(wsUrl);
     wsRef.current = socket;
@@ -32,7 +46,21 @@ function App() {
     };
 
     socket.onmessage = (event) => {
-      setLogs(prev => [...prev, { id: Date.now(), text: `[Daemon] ${event.data}`, type: "sys" }]);
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'message' && data.role === 'assistant' && data.content) {
+          setLogs(prev => {
+            const lastLog = prev[prev.length - 1];
+            if (lastLog && lastLog.type === 'agent-stream') {
+              return [...prev.slice(0, -1), { ...lastLog, text: lastLog.text + data.content }];
+            } else {
+              return [...prev, { id: Date.now(), text: data.content, type: "agent-stream", isMarkdown: true }];
+            }
+          });
+        }
+      } catch (e) {
+        setLogs(prev => [...prev, { id: Date.now(), text: `[Daemon] ${event.data}`, type: "sys" }]);
+      }
     };
 
     socket.onclose = () => {
@@ -41,6 +69,39 @@ function App() {
     };
 
     return () => socket.close();
+  }, []);
+
+  useEffect(() => {
+    const fetchSkillsAndSessions = async () => {
+      try {
+        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+        const headers = { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` };
+        const [skillsRes, sessionsRes] = await Promise.all([
+          fetch(`${host}/api/v1/skills`, { headers }),
+          fetch(`${host}/api/v1/sessions`, { headers })
+        ]);
+
+        if (!checkAuth(skillsRes) || !checkAuth(sessionsRes)) return;
+
+        if (skillsRes.ok) {
+          const data = await skillsRes.json();
+          setSkills(data.skills || []);
+        }
+
+        if (sessionsRes.ok) {
+          const data = await sessionsRes.json();
+          setSessions(data.sessions || []);
+          if (data.current_session_id) {
+            setSysStatus(s => ({ ...s, sessionId: data.current_session_id }));
+          }
+        }
+      } catch (err) {
+        // failed
+      }
+    };
+    fetchSkillsAndSessions();
+    const interval = setInterval(fetchSkillsAndSessions, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -72,37 +133,121 @@ function App() {
     }
   }, [logs]);
 
+  useEffect(() => {
+    if (!sysStatus.sessionId) return;
+
+    const loadHistory = async () => {
+      try {
+        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+        const res = await fetch(`${host}/api/v1/sessions/history?session_id=${sysStatus.sessionId}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+        });
+        if (!checkAuth(res)) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (data.history && data.history.length > 0) {
+            const historyLogs = data.history.map((msg: any, i: number) => ({
+              id: Date.now() + i,
+              text: msg.role === 'user' ? `[You] ${msg.content}` : msg.content,
+              type: msg.role === 'user' ? 'success' : 'agent-stream-rest',
+              isMarkdown: msg.role !== 'user'
+            }));
+            // Provide context log before the history
+            setLogs([
+              { id: Date.now() - 1, text: `>> 加载会话历史: ${sysStatus.sessionId}`, type: "sys" },
+              ...historyLogs
+            ]);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    loadHistory();
+  }, [sysStatus.sessionId]);
+
+  const switchSession = async (sessionId: string) => {
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const res = await fetch(`${host}/api/v1/sessions/switch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+      if (!checkAuth(res)) return;
+      if (res.ok) {
+        const data = await res.json();
+        setSysStatus(s => ({ ...s, sessionId: data.session_id }));
+        setLogs(prev => [...prev, { id: Date.now(), text: `>> 切换到会话: ${sessionId}`, type: "success" }]);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
   const handleSend = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && input.trim()) {
       const val = input.trim();
       setInput('');
       setLogs(prev => [...prev, { id: Date.now(), text: `[You] ${val}`, type: 'success' }]);
 
-      if (val.startsWith('/')) {
-        // WebSocket 指令下发
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(val);
-        } else {
-          setLogs(prev => [...prev, { id: Date.now(), text: ">> WebSocket 未连接无法发送实时指令", type: "error" }]);
+      // REST API 采用流式读取 SSE (Server-Sent Events 格式)
+      try {
+        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+        const res = await fetch(`${host}/api/v1/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
+          },
+          body: JSON.stringify({ prompt: val })
+        });
+
+        if (!checkAuth(res)) return;
+
+        if (!res.body) throw new Error("No response body");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6);
+              try {
+                const event = JSON.parse(dataStr);
+                if (event.type === 'init' && event.session_id) {
+                  setSysStatus(s => ({ ...s, sessionId: event.session_id }));
+                } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
+                  setLogs(prev => {
+                    const lastLog = prev[prev.length - 1];
+                    if (lastLog && lastLog.type === 'agent-stream-rest') {
+                      return [...prev.slice(0, -1), { ...lastLog, text: lastLog.text + event.content }];
+                    } else {
+                      return [...prev, { id: Date.now(), text: event.content, type: "agent-stream-rest", isMarkdown: true }];
+                    }
+                  });
+                }
+              } catch (e) {
+                // unparsable line
+              }
+            }
+          }
         }
-      } else {
-        // REST API 普通对话
-        try {
-          const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
-          const res = await fetch(`${host}/api/v1/chat`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: val })
-          });
-          const data = await res.json();
-          setLogs(prev => [...prev, {
-            id: Date.now(),
-            text: `[Agent] ${JSON.stringify(data.result?.response || data.result, null, 2)}`,
-            type: 'sys'
-          }]);
-        } catch (e) {
-          setLogs(prev => [...prev, { id: Date.now(), text: `>> API 请求失败`, type: "error" }]);
-        }
+      } catch (e) {
+        setLogs(prev => [...prev, { id: Date.now(), text: `>> API 请求失败`, type: "error" }]);
       }
     }
   };
@@ -114,12 +259,20 @@ function App() {
           <Terminal className="w-8 h-8" />
           <h1 className="text-2xl font-bold tracking-tight">Project Gemini-Claw</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <Menu className="w-5 h-5 text-gray-400 cursor-pointer hover:text-white transition-colors" />
+        <div className="flex items-center gap-2 relative">
+          <Menu className="w-5 h-5 text-gray-400 cursor-pointer hover:text-white transition-colors mr-4" />
+          <button
+            onClick={() => { localStorage.removeItem('auth_token'); onAuthFail(); }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors text-sm font-medium border border-red-500/20"
+            title="退出/清除访问密钥"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>退出终端</span>
+          </button>
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
         <aside className="lg:col-span-1 space-y-6">
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--color-brand-500)]/5 rounded-full blur-2xl -mr-10 -mt-10 transition-all group-hover:bg-[var(--color-brand-500)]/10" />
@@ -146,33 +299,52 @@ function App() {
 
               <div className="flex justify-between items-center border-b border-[var(--color-dark-border)] pb-2">
                 <span className="text-gray-400 text-sm">占用 Session ID</span>
-                <span className="text-sm truncate w-40 text-right" title={sysStatus.sessionId}>{sysStatus.sessionId}</span>
+                <span className="text-sm truncate w-40 text-right" title={sysStatus.sessionId}>{sysStatus.sessionId || 'None'}</span>
               </div>
             </div>
           </div>
 
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
-                <Activity className="w-5 h-5 text-purple-400" />
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
+                  <FileText className="w-5 h-5 text-blue-400" />
+                </div>
+                <h2 className="text-lg font-semibold text-white">关联的会话</h2>
               </div>
-              <h2 className="text-lg font-semibold text-white">活跃 Cron 队列</h2>
             </div>
 
-            <ul className="space-y-3">
-              <li className="text-sm flex justify-between px-3 py-2 bg-[var(--color-dark-900)] rounded-md border border-[var(--color-dark-border)]">
-                <span className="text-gray-300">0 3 * * *</span>
-                <span className="text-purple-300 truncate w-32 text-right">清理与记忆反思</span>
-              </li>
-              <li className="text-sm flex justify-between px-3 py-2 bg-[var(--color-dark-900)] rounded-md border border-[var(--color-dark-border)]">
-                <span className="text-gray-300">*/30 * * * *</span>
-                <span className="text-purple-300 truncate w-32 text-right">Heartbeat Pulse</span>
-              </li>
+            <ul className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              {sessions.map(s => (
+                <li key={s.id} onClick={() => switchSession(s.id)} className={cn("text-sm px-3 py-2 bg-[var(--color-dark-900)] rounded-md border border-[var(--color-dark-border)] cursor-pointer hover:border-[#58a6ff] transition-colors", sysStatus.sessionId === s.id ? 'border-[#58a6ff]' : '')}>
+                  <div className="truncate font-semibold text-gray-300">{s.desc}</div>
+                  <div className="text-xs text-gray-500 truncate">{s.id}</div>
+                </li>
+              ))}
+              {sessions.length === 0 && <span className="text-sm text-gray-500">暂无会话记录</span>}
             </ul>
+          </div>
+
+          <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
+                <Cpu className="w-5 h-5 text-green-400" />
+              </div>
+              <h2 className="text-lg font-semibold text-white">可用技能库</h2>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {skills.map(skill => (
+                <div key={skill} className="px-3 py-1.5 bg-[var(--color-dark-900)] border border-[var(--color-dark-border)] rounded-full text-xs text-gray-300 hover:border-[var(--color-brand-500)] transition-colors cursor-default">
+                  {skill}
+                </div>
+              ))}
+              {skills.length === 0 && <span className="text-sm text-gray-500">暂无可用技能</span>}
+            </div>
           </div>
         </aside>
 
-        <main className="lg:col-span-2 flex flex-col bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl overflow-hidden shadow-2xl relative max-h-[70vh]">
+        <main className="lg:col-span-3 flex flex-col bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl overflow-hidden shadow-2xl relative max-h-[75vh]">
 
           <div className="bg-[#010409] px-4 py-3 border-b border-[var(--color-dark-border)] flex items-center justify-between">
             <span className="text-sm text-gray-400 font-semibold tracking-widest">&gt;&gt; TERMINAL OUTPOST</span>
@@ -185,19 +357,28 @@ function App() {
 
           <div
             ref={terminalRef}
-            className="flex-1 bg-[#010409] p-5 overflow-y-auto space-y-2"
+            className="flex-1 bg-[#010409] p-5 overflow-y-auto space-y-4"
           >
             {logs.map((log) => (
               <div
                 key={log.id}
                 className={cn(
-                  "text-[15px] leading-relaxed whitespace-pre-wrap",
+                  "text-[15px] leading-relaxed",
                   log.type === "sys" ? "text-[#8b949e]" : "",
                   log.type === "success" ? "text-green-400" : "",
-                  log.type === "error" ? "text-red-400 text-shadow-glow" : ""
+                  log.type === "error" ? "text-red-400 text-shadow-glow" : "",
+                  (log.type === "agent-stream" || log.type === "agent-stream-rest") ? "text-[#e6edf3] p-3 border border-[#30363d] bg-[#0d1117] rounded-lg shadow-sm" : ""
                 )}
               >
-                {log.text}
+                {log.isMarkdown ? (
+                  <div className="prose prose-invert prose-p:my-1 prose-pre:bg-[#161b22] prose-pre:border prose-pre:border-[#30363d] prose-h1:text-xl max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {log.text}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap">{log.text}</div>
+                )}
               </div>
             ))}
           </div>
@@ -210,7 +391,7 @@ function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleSend}
-                placeholder="输入普通对话文字，或以 / 开头下发实时越权指令..."
+                placeholder="输入普通对话文字，或以 / 开头下发系统级指令 (如 /new 开启新对话)..."
                 className="w-full bg-[#0d1117] text-[#c9d1d9] border border-[var(--color-dark-border)] rounded-lg py-3 pl-12 pr-4 focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]/50 transition-all placeholder:text-gray-600"
                 autoComplete="off"
               />
@@ -220,6 +401,16 @@ function App() {
       </div>
     </div>
   );
+}
+
+function App() {
+  const [authenticated, setAuthenticated] = useState<boolean>(() => !!localStorage.getItem('auth_token'));
+
+  if (!authenticated) {
+    return <Login onLoginSuccess={() => setAuthenticated(true)} />;
+  }
+
+  return <Dashboard onAuthFail={() => setAuthenticated(false)} />;
 }
 
 export default App;
