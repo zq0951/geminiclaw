@@ -1,10 +1,3 @@
-import sys
-import asyncio
-
-if sys.platform == 'win32':
-    # 修复在 Windows 且被 uvicorn 挂载时，子进程 create_subprocess_exec 会抛出 NotImplementedError 的问题
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 import os
 import json
 import asyncio

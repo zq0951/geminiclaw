@@ -4,13 +4,6 @@ import logging
 import asyncio
 import datetime
 import subprocess
-import sys
-
-if sys.platform == 'win32':
-    # Windows 平台下如果使用了 SelectorEventLoop，则不支持 create_subprocess_exec
-    # 必须显式设置为 WindowsProactorEventLoopPolicy
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("GeminiEngine")
@@ -83,20 +76,20 @@ class GeminiCliAdapter:
             cmd.extend(["-r", self.session_id])
             
         logger.info(f"Executing gemini cli (stream). Session ID: {self.session_id or 'NEW'}")
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
+        # 使用独立的系统线程来规避 Windows 环境下各类基于 SelectorEventLoop 引发的 RuntimeError
+        process = subprocess.Popen(
+            cmd,
             cwd=self.cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL
         )
 
         full_response_text = ""
         
         try:
             while True:
-                line = await process.stdout.readline()
+                line = await asyncio.to_thread(process.stdout.readline)
                 if not line:
                     break
                 
@@ -118,10 +111,10 @@ class GeminiCliAdapter:
                 except json.JSONDecodeError:
                     logger.warning(f"Could not parse JSONL line: {line_text}")
             
-            await process.wait()
+            await asyncio.to_thread(process.wait)
             
             if process.returncode != 0:
-                stderr_output = await process.stderr.read()
+                stderr_output = await asyncio.to_thread(process.stderr.read)
                 logger.error(f"CLI Error: {stderr_output.decode('utf-8')}")
                 yield {"type": "error", "message": "Subprocess error", "details": stderr_output.decode('utf-8')}
                 
