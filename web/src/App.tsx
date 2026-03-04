@@ -372,7 +372,23 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
               >
                 {log.isMarkdown ? (
                   <div className="prose prose-invert prose-p:my-1 prose-pre:bg-[#161b22] prose-pre:border prose-pre:border-[#30363d] prose-h1:text-xl max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        img: ({ node, ...props }) => (
+                          <div className="my-4 relative group">
+                            <img 
+                              {...props} 
+                              className="rounded-lg border border-[#30363d] max-w-full h-auto shadow-2xl transition-transform hover:scale-[1.02] cursor-zoom-in" 
+                              loading="lazy"
+                            />
+                            <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded text-[10px] text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                              4K Ultra HD
+                            </div>
+                          </div>
+                        )
+                      }}
+                    >
                       {log.text}
                     </ReactMarkdown>
                   </div>

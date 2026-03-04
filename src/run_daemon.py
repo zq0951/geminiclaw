@@ -1,5 +1,4 @@
 import time
-import schedule
 import datetime
 import logging
 from pytz import timezone

@@ -10,7 +10,8 @@ logger = logging.getLogger("GeminiEngine")
 
 class GeminiCliAdapter:
     def __init__(self, executable_path="gemini"):
-        self.cmd_base = executable_path
+        import shutil
+        self.cmd_base = shutil.which(executable_path) or executable_path
         self.cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # geminiclaw root
         self.session_id = None
         self.session_file = os.path.join(self.cwd, ".current_session")

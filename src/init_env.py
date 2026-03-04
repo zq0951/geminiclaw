@@ -1,8 +1,10 @@
 import os
+import sys
 
-def init_env():
+def init_env(force=False):
     template_path = "SYSTEM_PROMPTS_TEMPLATE.md"
     if not os.path.exists(template_path):
+        print(f"[Error] Template {template_path} not found.")
         return
     
     with open(template_path, "r", encoding="utf-8") as f:
@@ -23,17 +25,22 @@ def init_env():
             continue
             
         filename = file_header[:-3].strip()
-        file_content = lines[1]
+        file_content = lines[1].lstrip('\n') # Clean leading newlines
         
-        # Optional: remove trailing newlines that might have accumulated
-        while file_content.endswith('\n\n'):
-            file_content = file_content[:-1]
+        # Optional: remove trailing spaces/newlines that might have accumulated
+        file_content = file_content.rstrip() + '\n'
             
-        # Write to file if it doesn't exist
-        if not os.path.exists(filename):
-            print(f"[Init] Creating {filename} from template...")
+        # Write to file if it doesn't exist OR if force is enabled
+        if force or not os.path.exists(filename):
+            action = "Overwriting" if os.path.exists(filename) else "Creating"
+            print(f"[Init] {action} {filename}...")
+            
+            # Ensure directory exists for files like memory/heartbeat-state.json if added later
+            os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+            
             with open(filename, "w", encoding="utf-8") as out:
                 out.write(file_content)
 
 if __name__ == "__main__":
-    init_env()
+    force_update = "--force" in sys.argv
+    init_env(force=force_update)

@@ -1,30 +1,61 @@
 #!/bin/bash
 # stop.sh - 平滑终止所有 Gemini-Claw 相关后台服务
 
-echo "==============================================="
-echo "   [Gemini-Claw] 终止序列开始 "
-echo "==============================================="
-
 cd "$(dirname "$0")"
 
-if [ -f "run_daemon.pid" ]; then
-    DAEMON_PID=$(cat run_daemon.pid)
-    echo "终止后台心跳总线 (run_daemon.py) PID: $DAEMON_PID"
-    kill $DAEMON_PID 2>/dev/null
-    rm run_daemon.pid
-else
-    echo "未找到后台心跳记录文件 (run_daemon.pid)，尝试强制 pkill"
-    pkill -f "python src/run_daemon.py"
-fi
+# 系统类型判断
+OS_TYPE="Unknown"
+case "$OSTYPE" in
+  linux*)   OS_TYPE="Linux" ;;
+  darwin*)  OS_TYPE="macOS" ;;
+  msys*|cygwin*|win32*) OS_TYPE="Windows" ;;
+  *)
+    if uname -a | grep -iq "mingw\|cygwin\|windows"; then
+      OS_TYPE="Windows"
+    fi
+    ;;
+esac
 
-if [ -f "api.pid" ]; then
-    API_PID=$(cat api.pid)
-    echo "终止后台接口服务 (api.py) PID: $API_PID"
-    kill $API_PID 2>/dev/null
-    rm api.pid
-else
-    echo "未找到后台接口服务文件 (api.pid)，尝试强制 pkill"
-    pkill -f "python src/api.py"
+echo "==============================================="
+echo "   [Gemini-Claw] 终止序列开始 (OS: $OS_TYPE) "
+echo "==============================================="
+
+stop_process() {
+    PID_FILE=$1
+    PROCESS_MARK=${2:-""}
+
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        echo "终止服务 PID: $PID (对应记录: $PID_FILE) ..."
+        if [ "$OS_TYPE" = "Windows" ]; then
+            # Windows 下可能需要 taskkill，但 Git Bash 下 kill 经常也是有效的
+            kill -15 $PID 2>/dev/null || kill -9 $PID 2>/dev/null
+        else
+            kill -15 $PID 2>/dev/null
+            sleep 1
+            kill -9 $PID 2>/dev/null || true
+        fi
+        rm -f "$PID_FILE"
+    else
+        echo "未找到 $PID_FILE，尝试根据进程特征 ($PROCESS_MARK) 关闭..."
+        pkill -f "python src/$PROCESS_MARK" 2>/dev/null || true
+    fi
+}
+
+# 停止 daemon
+stop_process "run_daemon.pid" "run_daemon.py"
+
+# 停止 api
+stop_process "api.pid" "api.py"
+
+# 如果配置了 Systemd 服务，给出提示
+if [ "$OS_TYPE" = "Linux" ]; then
+    if systemctl is-active --quiet geminiclaw.service 2>/dev/null; then
+        echo "-----------------------------------------------"
+        echo "警告: 检测到 systemd 服务正在运行！"
+        echo "若要彻底停止服务，请使用: sudo systemctl stop geminiclaw"
+        echo "-----------------------------------------------"
+    fi
 fi
 
 echo "==============================================="

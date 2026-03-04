@@ -10,12 +10,20 @@ import sys
 import json
 import argparse
 import re
-from bs4 import BeautifulSoup
 
 def search_duckduckgo(query: str) -> dict:
     if not query:
         return {"error": "Query is required"}
         
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return {
+            "status": "degraded",
+            "message": "Python module 'beautifulsoup4' not found. Please run 'pip install beautifulsoup4'.",
+            "results": []
+        }
+
     try:
         url = "https://html.duckduckgo.com/html/"
         data = urllib.parse.urlencode({'q': query}).encode('ascii')
@@ -40,10 +48,8 @@ def search_duckduckgo(query: str) -> dict:
                 snippet = snippet_tag.get_text(strip=True)
                 
                 if link and not link.startswith("//"):
-                    # the URL is sometimes passed via DuckDuckGo redirect
                     if 'uddg=' in link:
                         try:
-                            # Attempt to extract actual URL
                             link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
                         except Exception:
                             pass
@@ -52,13 +58,10 @@ def search_duckduckgo(query: str) -> dict:
             if len(results) >= 10:
                 break
                 
-        if not results:
-            return {"status": "success", "results": [], "message": f"No results found for '{query}'"}
-            
         return {"status": "success", "results": results}
         
     except Exception as e:
-        return {"error": str(e), "message": "Failed to perform web search."}
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Web Search Skill via DuckDuckGo")

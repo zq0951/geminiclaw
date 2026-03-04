@@ -48,14 +48,27 @@ def is_valid_token(token: str):
         return False
 
 # Serve static files for the frontend Dashboard
-STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "dist")
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+STATIC_DIR = os.path.join(ROOT_DIR, "web", "dist")
+# 修改为根目录下的 media 文件夹，完全解耦
+MEDIA_DIR = os.path.join(ROOT_DIR, "media")
+
+# 确保媒体目录存在
+os.makedirs(MEDIA_DIR, exist_ok=True)
+
+# 映射媒体文件路径，实现即时访问
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+
 if os.path.exists(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
 
     @app.get("/")
     async def serve_index():
-        with open(os.path.join(STATIC_DIR, "index.html"), "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+        index_path = os.path.join(STATIC_DIR, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+        return HTMLResponse(content="<h1>Frontend not built yet.</h1><p>Please run 'npm run build' in the web directory.</p>")
 
 @app.get("/health")
 async def health_check():
@@ -187,4 +200,4 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     # Optional wrapper to start locally
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8888, reload=True)

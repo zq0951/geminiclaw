@@ -210,12 +210,16 @@ __marimo__/
 .tracked_sessions
 .current_session
 /memory/*
+/media/*
 memory.db
 .history
 config.json
+AGENTS.md
 MEMORY.md
 GEMINI.md
 SOUL.md
 IDENTITY.md
 USER.md
 TOOLS.md
+
+service_start_all.sh
