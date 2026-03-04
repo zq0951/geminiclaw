@@ -141,7 +141,9 @@ class GeminiCliAdapter:
                 cmd, 
                 cwd=self.cwd,
                 capture_output=True, 
-                text=True, 
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
                 stdin=subprocess.DEVNULL
             )
@@ -181,7 +183,7 @@ class GeminiCliAdapter:
                 pass
 
         try:
-            result = subprocess.run([self.cmd_base, "--list-sessions", "-o", "json"], cwd=self.cwd, capture_output=True, text=True)
+            result = subprocess.run([self.cmd_base, "--list-sessions", "-o", "json"], cwd=self.cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             lines = result.stdout.strip().split("\n")
             sessions = []
             for line in lines:
