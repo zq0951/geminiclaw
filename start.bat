@@ -28,18 +28,18 @@ if %ERRORLEVEL% NEQ 0 (
 
 python src\init_env.py
 
-:: 对于 Windows，如果要作为后台且不阻塞终端窗口：
-:: 使用 START /B 能在后台跑，但是关掉当前 cmd 也会失效；
-:: 这里创建一个隐藏运行的包装方式可以用 pythonw，但为了能方便收集 logs 并看到报错，我们用 start cmd /c
+:: 对于 Windows，设置 UTF-8 编码以防乱码
+chcp 65001 >nul
 
+:: 使用 start /b 在后台执行并不弹新窗口
 echo ^> 启动 run_daemon.py ...
-start "Gemini-Claw Daemon" /MIN cmd /c "%ACTIVATE_CMD% & python src\run_daemon.py >> logs\daemon.log 2>&1"
+start /b cmd /c "%ACTIVATE_CMD% & python src\run_daemon.py >> logs\daemon.log 2>&1"
 
 echo ^> 启动 api.py (Web Dashboard) ...
-start "Gemini-Claw API" /MIN cmd /c "%ACTIVATE_CMD% & python src\api.py >> logs\api.log 2>&1"
+start /b cmd /c "%ACTIVATE_CMD% & python src\api.py >> logs\api.log 2>&1"
 
 echo ===============================================
-echo 🚀 服务已在最小化的终端窗口中启动！
+echo 🚀 服务已在后台隐式启动成功！
 echo - 控制台日志可通过查看 logs\api.log 或 logs\daemon.log 获取。
 echo - Frontend 大屏可访问 http://127.0.0.1:8888
 echo 你可以运行 stop.bat 优雅关闭这些服务。

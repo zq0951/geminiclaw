@@ -214,9 +214,15 @@ class GeminiCliAdapter:
         except Exception as e:
             logger.error(f"Failed to log interaction: {e}")
 
+    def _get_safe_history_path(self, sid):
+        if not sid: return None
+        import re
+        safe_sid = re.sub(r'[\\/:*?"<>|]', '_', sid)
+        return os.path.join(self.history_dir, f"{safe_sid}.json")
+
     def _append_history(self, sid, prompt, response):
-        if not sid: return
-        history_file = os.path.join(self.history_dir, f"{sid}.json")
+        history_file = self._get_safe_history_path(sid)
+        if not history_file: return
         history = []
         if os.path.exists(history_file):
             try:
@@ -233,8 +239,8 @@ class GeminiCliAdapter:
             logger.error(f"Failed to save history: {e}")
 
     def get_session_history(self, sid):
-        if not sid: return []
-        history_file = os.path.join(self.history_dir, f"{sid}.json")
+        history_file = self._get_safe_history_path(sid)
+        if not history_file: return []
         if os.path.exists(history_file):
             try:
                 with open(history_file, "r", encoding="utf-8") as f:
