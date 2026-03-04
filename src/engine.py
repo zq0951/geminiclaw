@@ -111,12 +111,13 @@ class GeminiCliAdapter:
                 except json.JSONDecodeError:
                     logger.warning(f"Could not parse JSONL line: {line_text}")
             
+            stderr_output = await asyncio.to_thread(process.stderr.read)
             await asyncio.to_thread(process.wait)
             
             if process.returncode != 0:
-                stderr_output = await asyncio.to_thread(process.stderr.read)
-                logger.error(f"CLI Error: {stderr_output.decode('utf-8')}")
-                yield {"type": "error", "message": "Subprocess error", "details": stderr_output.decode('utf-8')}
+                err_text = stderr_output.decode('utf-8', errors='replace')
+                logger.error(f"CLI Error: {err_text}")
+                yield {"type": "error", "message": "Subprocess error", "details": err_text}
                 
             if full_response_text:
                 self._log_interaction(prompt, {"response": full_response_text})

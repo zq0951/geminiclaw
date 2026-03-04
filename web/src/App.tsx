@@ -261,6 +261,15 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                       return [...prev, { id: Date.now(), text: event.content, type: "agent-stream-rest", isMarkdown: true }];
                     }
                   });
+                } else if (event.type === 'error') {
+                  setLogs((prev) => [
+                    ...prev,
+                    {
+                      id: Date.now(),
+                      text: `>> [Core Error] ${event.message}\n${event.details || ''}`,
+                      type: 'error'
+                    }
+                  ]);
                 }
               } catch (e) {
                 // unparsable line
