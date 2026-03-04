@@ -4,6 +4,13 @@ import logging
 import asyncio
 import datetime
 import subprocess
+import sys
+
+if sys.platform == 'win32':
+    # Windows 平台下如果使用了 SelectorEventLoop，则不支持 create_subprocess_exec
+    # 必须显式设置为 WindowsProactorEventLoopPolicy
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("GeminiEngine")
