@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Terminal, Menu, Cpu, FileText, LogOut } from 'lucide-react';
+import { Terminal, Menu, Cpu, FileText, LogOut, Plus } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ReactMarkdown from 'react-markdown';
@@ -23,6 +23,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
     { id: 1, text: ">> 正在初始化终端引擎...", type: "sys" }
   ]);
   const [input, setInput] = useState('');
+  const [model, setModel] = useState('auto');
   const [sysStatus, setSysStatus] = useState({ state: 'connecting', sessionId: 'Waiting' });
   const [skills, setSkills] = useState<string[]>([]);
   const [sessions, setSessions] = useState<{ id: string, desc: string }[]>([]);
@@ -189,6 +190,27 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
     }
   }
 
+  const handleNewSession = async () => {
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const res = await fetch(`${host}/api/v1/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({ prompt: "/new" })
+      });
+      if (!checkAuth(res)) return;
+      if (res.ok) {
+        setLogs(prev => [...prev, { id: Date.now(), text: ">> 开启了全新的会话！", type: "success" }]);
+        setSysStatus(s => ({ ...s, sessionId: '' }));
+      }
+    } catch (e) {
+      setLogs(prev => [...prev, { id: Date.now(), text: `>> 新对话请求失败`, type: "error" }]);
+    }
+  };
+
   const handleSend = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && input.trim()) {
       const val = input.trim();
@@ -204,7 +226,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
           },
-          body: JSON.stringify({ prompt: val })
+          body: JSON.stringify({ prompt: val, model: model })
         });
 
         if (!checkAuth(res)) return;
@@ -348,10 +370,35 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
 
           <div className="bg-[#010409] px-4 py-3 border-b border-[var(--color-dark-border)] flex items-center justify-between">
             <span className="text-sm text-gray-400 font-semibold tracking-widest">&gt;&gt; TERMINAL OUTPOST</span>
-            <div className="flex gap-1.5">
-              <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+
+            <div className="flex items-center gap-3">
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="bg-[var(--color-dark-700)] text-xs text-gray-300 border border-[var(--color-dark-border)] rounded-md px-2 py-1 outline-none focus:border-[#58a6ff]"
+              >
+                <option value="auto">auto (CLI 默认)</option>
+                <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+                <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+              </select>
+
+              <button
+                onClick={handleNewSession}
+                className="flex items-center gap-1 bg-[#1f6feb] hover:bg-[#388bfd] text-white px-3 py-1 rounded-md text-xs font-medium transition-colors border border-[rgba(240,246,252,0.1)] shadow-sm"
+                title="开启新会话 (重置当前对话状态)"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>新对话</span>
+              </button>
+
+              <div className="flex gap-1.5 ml-2">
+                <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
+                <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+              </div>
             </div>
           </div>
 
@@ -372,14 +419,14 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
               >
                 {log.isMarkdown ? (
                   <div className="prose prose-invert prose-p:my-1 prose-pre:bg-[#161b22] prose-pre:border prose-pre:border-[#30363d] prose-h1:text-xl max-w-none">
-                    <ReactMarkdown 
+                    <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
                         img: ({ node, ...props }) => (
                           <div className="my-4 relative group">
-                            <img 
-                              {...props} 
-                              className="rounded-lg border border-[#30363d] max-w-full h-auto shadow-2xl transition-transform hover:scale-[1.02] cursor-zoom-in" 
+                            <img
+                              {...props}
+                              className="rounded-lg border border-[#30363d] max-w-full h-auto shadow-2xl transition-transform hover:scale-[1.02] cursor-zoom-in"
                               loading="lazy"
                             />
                             <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded text-[10px] text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity">

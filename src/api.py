@@ -129,6 +129,9 @@ async def send_chat(request: Request):
     """Event Stream JSONL endpoint triggered from frontend."""
     data = await request.json()
     prompt = data.get("prompt", "")
+    model = data.get("model", "")
+    if model == "auto":
+        model = None
     
     if not prompt:
         return {"error": "Prompt cannot be empty"}
@@ -143,7 +146,7 @@ async def send_chat(request: Request):
 
     # Delegate to the engine's stream generator without blocking the main event loop
     async def event_generator():
-        async for event in engine.chat_stream(prompt):
+        async for event in engine.chat_stream(prompt, model=model):
             yield f"data: {json.dumps(event)}\n\n"
             
     return StreamingResponse(event_generator(), media_type="text/event-stream")

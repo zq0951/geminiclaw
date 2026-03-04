@@ -64,9 +64,13 @@ class GeminiCliAdapter:
         self._save_session(sid)
         logger.info(f"Session manually set to {sid}")
 
-    async def chat_stream(self, prompt: str):
+    async def chat_stream(self, prompt: str, model: str = None):
         """Sends a prompt to the gemini CLI and yields JSONL events."""
         cmd = [self.cmd_base, "-y", "-o", "stream-json", "-p", prompt]
+        
+        if model:
+            cmd.extend(["-m", model])
+
         
         if self.session_id:
             cmd.extend(["-r", self.session_id])
@@ -122,9 +126,11 @@ class GeminiCliAdapter:
             logger.error(f"Error during stream processing: {e}")
             yield {"type": "error", "message": str(e)}
 
-    def chat(self, prompt: str) -> dict:
+    def chat(self, prompt: str, model: str = None) -> dict:
         """Sends a prompt to the gemini CLI in headless mode synchronously. Used by cron and legacy."""
         cmd = [self.cmd_base, "-y", "-o", "json", "-p", prompt]
+        if model:
+            cmd.extend(["-m", model])
         if self.session_id:
             cmd.extend(["-r", self.session_id])
             
