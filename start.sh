@@ -22,18 +22,26 @@ echo "   [Gemini-Claw] 启动序列开始 (OS: $OS_TYPE) "
 echo "==============================================="
 
 # 2. 尝试拉起虚拟环境 (Conda / venv)
-if command -v conda >/dev/null 2>&1 && conda env list | grep -q "geminiclaw"; then
+if [ -n "$CONDA_DEFAULT_ENV" ] || [ -n "$VIRTUAL_ENV" ]; then
+    echo "✅ 已激活虚拟环境: ${CONDA_DEFAULT_ENV:-$VIRTUAL_ENV}"
+elif command -v conda >/dev/null 2>&1 && conda env list | grep -q "geminiclaw"; then
     CONDA_BASE=$(conda info --base 2>/dev/null)
     if [ -n "$CONDA_BASE" ] && [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
         source "$CONDA_BASE/etc/profile.d/conda.sh"
         conda activate geminiclaw 2>/dev/null
+        echo "✅ 自动激活 Conda 环境: geminiclaw"
     fi
 elif [ -f "venv/bin/activate" ]; then
     source "venv/bin/activate"
+    echo "✅ 自动激活 venv 环境: venv"
 elif [ -f ".venv/bin/activate" ]; then
     source ".venv/bin/activate"
+    echo "✅ 自动激活 venv 环境: .venv"
 else
-    echo "💡 提示: 未检测到特定 conda (geminiclaw) / venv，将使用找到的环境 Python 执行。"
+    echo "❌ 错误: 未检测到已激活的虚拟环境 (Conda 或 venv)！"
+    echo "为了系统安全性，严禁在全局 Python 环境下直接启动。"
+    echo "请先运行 'python -m venv venv && source venv/bin/activate' 或激活对应的 Conda 环境。"
+    exit 1
 fi
 
 # 确保存放日志的目录存在

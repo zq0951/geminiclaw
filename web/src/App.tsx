@@ -27,12 +27,14 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
   const [sysStatus, setSysStatus] = useState({ state: 'connecting', sessionId: 'Waiting' });
   const [skills, setSkills] = useState<string[]>([]);
   const [sessions, setSessions] = useState<{ id: string, desc: string }[]>([]);
+  const [bounties, setBounties] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>([]);
   const terminalRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const isFetchingSessions = useRef(false);
 
   // 初始化 WebSocket
   useEffect(() => {
-    // 处理开发环境 Vite proxy 和生产环境直连的不同
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.port === "5173" ? "127.0.0.1:8000" : window.location.host;
     const token = localStorage.getItem('auth_token') || '';
@@ -52,7 +54,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
         if (data.type === 'message' && data.role === 'assistant' && data.content) {
           setLogs(prev => {
             const lastLog = prev[prev.length - 1];
-            if (lastLog && lastLog.type === 'agent-stream') {
+            if (lastLog && (lastLog.type === 'agent-stream' || lastLog.type === 'agent-stream-rest')) {
               return [...prev.slice(0, -1), { ...lastLog, text: lastLog.text + data.content }];
             } else {
               return [...prev, { id: Date.now(), text: data.content, type: "agent-stream", isMarkdown: true }];
@@ -72,36 +74,45 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
     return () => socket.close();
   }, []);
 
-  useEffect(() => {
-    const fetchSkillsAndSessions = async () => {
-      try {
-        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
-        const headers = { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` };
-        const [skillsRes, sessionsRes] = await Promise.all([
-          fetch(`${host}/api/v1/skills`, { headers }),
-          fetch(`${host}/api/v1/sessions`, { headers })
-        ]);
+  const fetchData = () => {
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const headers = { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` };
 
-        if (!checkAuth(skillsRes) || !checkAuth(sessionsRes)) return;
+      fetch(`${host}/api/v1/skills`, { headers })
+        .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+        .then(data => { if (data) setSkills(data.skills || []); })
+        .catch(() => { });
 
-        if (skillsRes.ok) {
-          const data = await skillsRes.json();
-          setSkills(data.skills || []);
-        }
+      fetch(`${host}/api/v1/bounties`, { headers })
+        .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+        .then(data => { if (data) setBounties(data); })
+        .catch(() => { });
 
-        if (sessionsRes.ok) {
-          const data = await sessionsRes.json();
-          setSessions(data.sessions || []);
-          if (data.current_session_id) {
-            setSysStatus(s => ({ ...s, sessionId: data.current_session_id }));
-          }
-        }
-      } catch (err) {
-        // failed
+      fetch(`${host}/api/v1/jobs`, { headers })
+        .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+        .then(data => { if (data) setJobs(data); })
+        .catch(() => { });
+
+      if (!isFetchingSessions.current) {
+        isFetchingSessions.current = true;
+        fetch(`${host}/api/v1/sessions`, { headers })
+          .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+          .then(data => {
+            if (data) {
+              setSessions(data.sessions || []);
+              if (data.current_session_id) setSysStatus(s => ({ ...s, sessionId: data.current_session_id }));
+            }
+          })
+          .catch(() => { })
+          .finally(() => { isFetchingSessions.current = false; });
       }
-    };
-    fetchSkillsAndSessions();
-    const interval = setInterval(fetchSkillsAndSessions, 30000);
+    } catch (err) { }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -158,6 +169,10 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
               { id: Date.now() - 1, text: `>> 加载会话历史: ${sysStatus.sessionId}`, type: "sys" },
               ...historyLogs
             ]);
+          } else {
+            setLogs([
+              { id: Date.now() - 1, text: `>> 建立全新交互通道: ${sysStatus.sessionId}`, type: "sys" }
+            ]);
           }
         }
       } catch (e) {
@@ -203,7 +218,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
       });
       if (!checkAuth(res)) return;
       if (res.ok) {
-        setLogs(prev => [...prev, { id: Date.now(), text: ">> 开启了全新的会话！", type: "success" }]);
+        setLogs([{ id: Date.now(), text: ">> 开启了全新的会话！", type: "success" }]);
         setSysStatus(s => ({ ...s, sessionId: '' }));
       }
     } catch (e) {
@@ -226,7 +241,8 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
           },
-          body: JSON.stringify({ prompt: val, model: model })
+          body: JSON.stringify({ prompt: val, model: model }),
+          keepalive: true // 告诉浏览器尽量保持这个长连接，防意外销毁
         });
 
         if (!checkAuth(res)) return;
@@ -304,7 +320,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
-        <aside className="lg:col-span-1 space-y-6">
+        <aside className="lg:col-span-1 space-y-6 max-h-[75vh] overflow-y-auto pr-2 pb-2">
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--color-brand-500)]/5 rounded-full blur-2xl -mr-10 -mt-10 transition-all group-hover:bg-[var(--color-brand-500)]/10" />
             <div className="flex items-center gap-3 mb-4">
@@ -354,6 +370,45 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
               ))}
               {sessions.length === 0 && <span className="text-sm text-gray-500">暂无会话记录</span>}
             </ul>
+          </div>
+
+          <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
+                <Plus className="w-5 h-5 text-yellow-400" />
+              </div>
+              <h2 className="text-lg font-semibold text-white">全自动打工看板</h2>
+            </div>
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              {bounties.map(b => (
+                <div key={b.id} className="text-xs p-2 bg-[var(--color-dark-900)] rounded border border-[var(--color-dark-border)]">
+                  <div className="flex justify-between font-bold text-gray-300">
+                    <span>{b.platform}</span>
+                    <span className={cn(b.status === 'SUCCESS' ? 'text-green-400' : 'text-yellow-400')}>{b.status}</span>
+                  </div>
+                  <div className="truncate my-1">{b.title}</div>
+                  <div className="text-[10px] text-blue-400">{b.reward_amount} {b.reward_currency}</div>
+                </div>
+              ))}
+              {bounties.length === 0 && <span className="text-sm text-gray-500">寻找猎物中...</span>}
+            </div>
+          </div>
+
+          <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
+                <Plus className="w-5 h-5 text-purple-400" />
+              </div>
+              <h2 className="text-lg font-semibold text-white">Cron 调度中心</h2>
+            </div>
+            <div className="space-y-2 text-[10px] text-gray-400">
+              {jobs.map((j, i) => (
+                <div key={i} className="p-1 border-b border-[var(--color-dark-border)] last:border-0 truncate">
+                  {j.info}
+                </div>
+              ))}
+              {jobs.length === 0 && <span>暂无活跃任务</span>}
+            </div>
           </div>
 
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">

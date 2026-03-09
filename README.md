@@ -16,12 +16,28 @@
 
 本仓库推荐使用 Conda 或 venv 虚拟环境以隔离您的纯净服务器。
 
-### 1. 环境准备
+### 1. 环境准备 (虚拟环境)
+
+**严禁在全局系统 Python 环境下启动。** 请选择以下任一方式初始化隔离环境：
+
+#### 选项 A: 使用 Conda (推荐)
 
 ```bash
-# 全局环境依赖（如需要）并确保 gemini cli 已成功安装可用
 conda create -n geminiclaw python=3.10 -y
 conda activate geminiclaw
+pip install -r requirements.txt
+```
+
+#### 选项 B: 使用原生 venv
+
+```bash
+# 创建并激活虚拟环境
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+# venv\Scripts\activate   # Windows
+
+# 安装依赖
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 

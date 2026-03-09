@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import sqlite3
 from fastapi import FastAPI, WebSocket, Request, BackgroundTasks, Depends, HTTPException, Header, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -200,7 +201,32 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket Error: {e}")
         pass
 
+@app.get("/api/v1/bounties")
+async def get_bounties():
+    conn = sqlite3.connect("memory.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM bounties ORDER BY id DESC LIMIT 20")
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+@app.get("/api/v1/jobs")
+async def get_jobs():
+    # 从 logs/jobs.json 实时读取正在运行的调度任务
+    jobs = []
+    log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", "jobs.json")
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                jobs_data = json.load(f)
+                for job in jobs_data:
+                    jobs.append({"info": job["info"], "log": f"Next run at: {job['next_run']}"})
+    except Exception as e:
+        print(f"Error parsing jobs.json: {e}")
+    return jobs
+
 if __name__ == "__main__":
     import uvicorn
     # Optional wrapper to start locally
-    uvicorn.run("api:app", host="0.0.0.0", port=8888, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8888, reload=False)
