@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Terminal, Menu, Cpu, FileText, LogOut, Plus } from 'lucide-react';
+import { Terminal, Cpu, FileText, LogOut, Plus, Trash2, ChevronDown, ChevronRight, X, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ReactMarkdown from 'react-markdown';
@@ -33,45 +33,68 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
   const wsRef = useRef<WebSocket | null>(null);
   const isFetchingSessions = useRef(false);
 
+  const [skillsCollapsed, setSkillsCollapsed] = useState(true);
+  const [jobsCollapsed, setJobsCollapsed] = useState(true);
+  const [selectedSkillDesc, setSelectedSkillDesc] = useState<{ name: string, content: string } | null>(null);
+  const [isWaiting, setIsWaiting] = useState(false);
+
   // 初始化 WebSocket
   useEffect(() => {
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.port === "5173" ? "127.0.0.1:8000" : window.location.host;
-    const token = localStorage.getItem('auth_token') || '';
-    const wsUrl = `${wsProtocol}//${host}/ws?token=${token}`;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
 
-    const socket = new WebSocket(wsUrl);
-    wsRef.current = socket;
+    const connectWs = () => {
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.port === "5173" ? "127.0.0.1:8000" : window.location.host;
+      const token = localStorage.getItem('auth_token') || '';
+      const wsUrl = `${wsProtocol}//${host}/ws?token=${token}`;
 
-    socket.onopen = () => {
-      setLogs(prev => [...prev, { id: Date.now(), text: ">> 核心数据总线 WebSocket 连接成功", type: "success" }]);
-      setSysStatus(s => ({ ...s, state: 'online' }));
+      socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        setLogs(prev => [...prev, { id: Date.now(), text: ">> 核心数据总线 WebSocket 连接成功", type: "success" }]);
+        setSysStatus(s => ({ ...s, state: 'online' }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'message' && data.role === 'assistant' && data.content) {
+            setIsWaiting(false);
+            setLogs(prev => {
+              const lastLog = prev[prev.length - 1];
+              if (lastLog && (lastLog.type === 'agent-stream' || lastLog.type === 'agent-stream-rest')) {
+                return [...prev.slice(0, -1), { ...lastLog, text: lastLog.text + data.content }];
+              } else {
+                return [...prev, { id: Date.now(), text: data.content, type: "agent-stream", isMarkdown: true }];
+              }
+            });
+          }
+        } catch (e) {
+          setLogs(prev => [...prev, { id: Date.now(), text: `[Daemon] ${event.data}`, type: "sys" }]);
+        }
+      };
+
+      socket.onclose = () => {
+        setLogs(prev => {
+          if (prev.length > 0 && prev[prev.length - 1].text.includes("尝试重连")) return prev;
+          return [...prev, { id: Date.now(), text: ">> 核心数据总线中断，尝试重连中...", type: "error" }];
+        });
+        setSysStatus(s => ({ ...s, state: 'offline' }));
+        reconnectTimer = setTimeout(connectWs, 3000);
+      };
     };
 
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'message' && data.role === 'assistant' && data.content) {
-          setLogs(prev => {
-            const lastLog = prev[prev.length - 1];
-            if (lastLog && (lastLog.type === 'agent-stream' || lastLog.type === 'agent-stream-rest')) {
-              return [...prev.slice(0, -1), { ...lastLog, text: lastLog.text + data.content }];
-            } else {
-              return [...prev, { id: Date.now(), text: data.content, type: "agent-stream", isMarkdown: true }];
-            }
-          });
-        }
-      } catch (e) {
-        setLogs(prev => [...prev, { id: Date.now(), text: `[Daemon] ${event.data}`, type: "sys" }]);
+    connectWs();
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
       }
     };
-
-    socket.onclose = () => {
-      setLogs(prev => [...prev, { id: Date.now(), text: ">> 核心数据总线中断", type: "error" }]);
-      setSysStatus(s => ({ ...s, state: 'offline' }));
-    };
-
-    return () => socket.close();
   }, []);
 
   const fetchData = () => {
@@ -111,9 +134,59 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
+    fetchData(); // 初始加载其他轻量状态，如果需要初始会话可以通过专门的方法
+
+    // We only poll light-weight stats every 10s: skills, bounties, jobs.
+    // The session listing (which spawns a heavyweight node process) shouldn't be polled blindly.
+    const interval = setInterval(() => {
+        try {
+            const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+            const headers = { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` };
+            
+            fetch(`${host}/api/v1/skills`, { headers })
+              .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+              .then(data => { if (data) setSkills(data.skills || []); })
+              .catch(() => { });
+
+            fetch(`${host}/api/v1/bounties`, { headers })
+              .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+              .then(data => { if (data) setBounties(data); })
+              .catch(() => { });
+
+            fetch(`${host}/api/v1/jobs`, { headers })
+              .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+              .then(data => { if (data) setJobs(data); })
+              .catch(() => { });
+        } catch(e) {}
+    }, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+  const fetchSessionsList = () => {
+    if (isFetchingSessions.current) return;
+    try {
+        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+        const headers = { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` };
+        isFetchingSessions.current = true;
+        fetch(`${host}/api/v1/sessions`, { headers })
+          .then(res => { if (checkAuth(res) && res.ok) return res.json(); })
+          .then(data => {
+            if (data) {
+              setSessions(data.sessions || []);
+              if (data.current_session_id && !sysStatus.sessionId) {
+                  setSysStatus(s => ({ ...s, sessionId: data.current_session_id }));
+              }
+            }
+          })
+          .catch(() => { })
+          .finally(() => { isFetchingSessions.current = false; });
+    } catch(err) {
+        isFetchingSessions.current = false;
+    }
+  };
+
+  useEffect(() => {
+    fetchSessionsList(); // Start by fetching the list exactly once when opening
   }, []);
 
   useEffect(() => {
@@ -143,45 +216,62 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, isWaiting]);
+
+  const loadHistoryStable = async (sessionId: string, init = false) => {
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const res = await fetch(`${host}/api/v1/sessions/history?session_id=${sessionId}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+      });
+      if (!checkAuth(res)) return;
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(prevLogs => {
+          if (!data.history || data.history.length === 0) {
+            if (init) return [{ id: Date.now(), text: `>> 建立全新交互通道: ${sessionId}`, type: "sys" }];
+            return prevLogs;
+          }
+
+          const existingHistoryLogs = prevLogs.filter(l => l.type === 'agent-stream-rest' || l.type === 'success');
+          let lastExistingText = existingHistoryLogs.length > 0 ? existingHistoryLogs[existingHistoryLogs.length - 1].text : '';
+          let lastFetchedMsg = data.history[data.history.length - 1];
+          let lastFetchedText = lastFetchedMsg.role === 'user' ? `[You] ${lastFetchedMsg.content}` : lastFetchedMsg.content;
+
+          if (existingHistoryLogs.length === data.history.length && lastExistingText === lastFetchedText && !init) {
+            return prevLogs;
+          }
+
+          const newLogs = data.history.map((msg: any, i: number) => ({
+            id: 10000 + i,
+            text: msg.role === 'user' ? `[You] ${msg.content}` : msg.content,
+            type: msg.role === 'user' ? 'success' : 'agent-stream-rest',
+            isMarkdown: msg.role !== 'user'
+          }));
+
+          return [
+            { id: 1, text: `>> 加载会话历史: ${sessionId}`, type: "sys" },
+            ...newLogs
+          ];
+        });
+      }
+    } catch (e) { }
+  };
 
   useEffect(() => {
-    if (!sysStatus.sessionId) return;
-
-    const loadHistory = async () => {
-      try {
-        const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
-        const res = await fetch(`${host}/api/v1/sessions/history?session_id=${sysStatus.sessionId}`, {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-        });
-        if (!checkAuth(res)) return;
-        if (res.ok) {
-          const data = await res.json();
-          if (data.history && data.history.length > 0) {
-            const historyLogs = data.history.map((msg: any, i: number) => ({
-              id: Date.now() + i,
-              text: msg.role === 'user' ? `[You] ${msg.content}` : msg.content,
-              type: msg.role === 'user' ? 'success' : 'agent-stream-rest',
-              isMarkdown: msg.role !== 'user'
-            }));
-            // Provide context log before the history
-            setLogs([
-              { id: Date.now() - 1, text: `>> 加载会话历史: ${sysStatus.sessionId}`, type: "sys" },
-              ...historyLogs
-            ]);
-          } else {
-            setLogs([
-              { id: Date.now() - 1, text: `>> 建立全新交互通道: ${sysStatus.sessionId}`, type: "sys" }
-            ]);
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    };
-
-    loadHistory();
+    if (!sysStatus.sessionId || sysStatus.sessionId === 'Waiting') return;
+    loadHistoryStable(sysStatus.sessionId, true);
   }, [sysStatus.sessionId]);
+
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (sysStatus.sessionId && sysStatus.sessionId !== 'Waiting' && !isWaiting) {
+      interval = setInterval(() => {
+        loadHistoryStable(sysStatus.sessionId, false);
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [sysStatus.sessionId, isWaiting]);
 
   const switchSession = async (sessionId: string) => {
     try {
@@ -205,6 +295,38 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
     }
   }
 
+  const deleteSession = async (sessionId: string) => {
+    if (!confirm('确定删除此会话吗？')) return;
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const res = await fetch(`${host}/api/v1/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      });
+      if (checkAuth(res) && res.ok) {
+        setLogs(prev => [...prev, { id: Date.now(), text: `>> 已删除会话: ${sessionId}`, type: "sys" }]);
+        fetchSessionsList(); // 重新加载列表
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const fetchSkillDesc = async (skill: string) => {
+    try {
+      const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
+      const res = await fetch(`${host}/api/v1/skills/${skill}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+      });
+      if (checkAuth(res) && res.ok) {
+        const data = await res.json();
+        setSelectedSkillDesc(data);
+      }
+    } catch (err) { }
+  };
+
   const handleNewSession = async () => {
     try {
       const host = window.location.port === "5173" ? "http://127.0.0.1:8000" : "";
@@ -227,10 +349,11 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
   };
 
   const handleSend = async (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && input.trim()) {
+    if (e.key === 'Enter' && input.trim() && !isWaiting) {
       const val = input.trim();
       setInput('');
       setLogs(prev => [...prev, { id: Date.now(), text: `[You] ${val}`, type: 'success' }]);
+      setIsWaiting(true);
 
       // REST API 采用流式读取 SSE (Server-Sent Events 格式)
       try {
@@ -245,9 +368,15 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
           keepalive: true // 告诉浏览器尽量保持这个长连接，防意外销毁
         });
 
-        if (!checkAuth(res)) return;
+        if (!checkAuth(res)) {
+          setIsWaiting(false);
+          return;
+        }
 
-        if (!res.body) throw new Error("No response body");
+        if (!res.body) {
+          setIsWaiting(false);
+          throw new Error("No response body");
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -269,6 +398,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                 if (event.type === 'init' && event.session_id) {
                   setSysStatus(s => ({ ...s, sessionId: event.session_id }));
                 } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
+                  setIsWaiting(false);
                   setLogs(prev => {
                     const lastLog = prev[prev.length - 1];
                     if (lastLog && lastLog.type === 'agent-stream-rest') {
@@ -278,6 +408,7 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                     }
                   });
                 } else if (event.type === 'error') {
+                  setIsWaiting(false);
                   setLogs((prev) => [
                     ...prev,
                     {
@@ -293,21 +424,22 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
             }
           }
         }
+        setIsWaiting(false);
       } catch (e) {
+        setIsWaiting(false);
         setLogs(prev => [...prev, { id: Date.now(), text: `>> API 请求失败`, type: "error" }]);
       }
     }
   };
 
   return (
-    <div className="min-h-screen bg-[var(--color-dark-900)] text-[#c9d1d9] flex flex-col p-4 md:p-8 font-mono">
+    <div className="min-h-screen bg-[var(--color-dark-900)] text-[#c9d1d9] flex flex-col p-4 md:p-8 font-mono relative">
       <header className="flex items-center justify-between border-b border-[var(--color-dark-border)] pb-4 mb-8">
         <div className="flex items-center gap-3 text-[var(--color-brand-500)]">
           <Terminal className="w-8 h-8" />
           <h1 className="text-2xl font-bold tracking-tight">Project Gemini-Claw</h1>
         </div>
         <div className="flex items-center gap-2 relative">
-          <Menu className="w-5 h-5 text-gray-400 cursor-pointer hover:text-white transition-colors mr-4" />
           <button
             onClick={() => { localStorage.removeItem('auth_token'); onAuthFail(); }}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors text-sm font-medium border border-red-500/20"
@@ -319,8 +451,8 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
-        <aside className="lg:col-span-1 space-y-6 max-h-[75vh] overflow-y-auto pr-2 pb-2">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1 relative">
+        <aside className="lg:col-span-1 space-y-6 max-h-[80vh] overflow-y-auto pr-2 pb-2">
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-32 h-32 bg-[var(--color-brand-500)]/5 rounded-full blur-2xl -mr-10 -mt-10 transition-all group-hover:bg-[var(--color-brand-500)]/10" />
             <div className="flex items-center gap-3 mb-4">
@@ -358,14 +490,28 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                   <FileText className="w-5 h-5 text-blue-400" />
                 </div>
                 <h2 className="text-lg font-semibold text-white">关联的会话</h2>
+                <button onClick={(e) => { e.stopPropagation(); fetchSessionsList(); }} title="刷新" className="p-1 hover:bg-[var(--color-dark-900)] rounded text-gray-400 hover:text-white transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                </button>
               </div>
             </div>
 
             <ul className="space-y-2 max-h-48 overflow-y-auto pr-1">
               {sessions.map(s => (
-                <li key={s.id} onClick={() => switchSession(s.id)} className={cn("text-sm px-3 py-2 bg-[var(--color-dark-900)] rounded-md border border-[var(--color-dark-border)] cursor-pointer hover:border-[#58a6ff] transition-colors", sysStatus.sessionId === s.id ? 'border-[#58a6ff]' : '')}>
-                  <div className="truncate font-semibold text-gray-300">{s.desc}</div>
-                  <div className="text-xs text-gray-500 truncate">{s.id}</div>
+                <li key={s.id} className={cn("flex flex-col text-sm px-3 py-2 bg-[var(--color-dark-900)] rounded-md border border-[var(--color-dark-border)] hover:border-[#58a6ff] transition-colors group", sysStatus.sessionId === s.id ? 'border-[#58a6ff]' : '')}>
+                  <div className="flex justify-between items-start cursor-pointer" onClick={() => switchSession(s.id)}>
+                    <div className="truncate font-semibold text-gray-300 w-full pr-2">{s.desc}</div>
+                  </div>
+                  <div className="flex justify-between items-center mt-1">
+                    <div className="text-xs text-gray-500 truncate cursor-pointer" onClick={() => switchSession(s.id)}>{s.id}</div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                      className="text-red-400 opacity-0 group-hover:opacity-100 hover:text-red-300 transition-opacity p-1"
+                      title="删除会话"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </li>
               ))}
               {sessions.length === 0 && <span className="text-sm text-gray-500">暂无会话记录</span>}
@@ -395,43 +541,66 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
           </div>
 
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
-                <Plus className="w-5 h-5 text-purple-400" />
-              </div>
-              <h2 className="text-lg font-semibold text-white">Cron 调度中心</h2>
-            </div>
-            <div className="space-y-2 text-[10px] text-gray-400">
-              {jobs.map((j, i) => (
-                <div key={i} className="p-1 border-b border-[var(--color-dark-border)] last:border-0 truncate">
-                  {j.info}
+            <div
+              className="flex items-center justify-between mb-2 cursor-pointer select-none group"
+              onClick={() => setJobsCollapsed(!jobsCollapsed)}
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)] group-hover:border-purple-400 transition-colors">
+                  <Plus className="w-5 h-5 text-purple-400" />
                 </div>
-              ))}
-              {jobs.length === 0 && <span>暂无活跃任务</span>}
+                <h2 className="text-lg font-semibold text-white">Cron 调度中心</h2>
+              </div>
+              <div className="text-gray-400">
+                {jobsCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+              </div>
             </div>
+            {!jobsCollapsed && (
+              <div className="space-y-2 text-[10px] text-gray-400 mt-4">
+                {jobs.map((j, i) => (
+                  <div key={i} className="p-1 border-b border-[var(--color-dark-border)] last:border-0 truncate">
+                    {j.info}
+                  </div>
+                ))}
+                {jobs.length === 0 && <span>暂无活跃任务</span>}
+              </div>
+            )}
           </div>
 
           <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl p-5 shadow-lg">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)]">
-                <Cpu className="w-5 h-5 text-green-400" />
+            <div
+              className="flex items-center justify-between mb-2 cursor-pointer select-none group"
+              onClick={() => setSkillsCollapsed(!skillsCollapsed)}
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-[var(--color-dark-900)] border border-[var(--color-dark-border)] group-hover:border-green-400 transition-colors">
+                  <Cpu className="w-5 h-5 text-green-400" />
+                </div>
+                <h2 className="text-lg font-semibold text-white">可用技能库</h2>
               </div>
-              <h2 className="text-lg font-semibold text-white">可用技能库</h2>
+              <div className="text-gray-400">
+                {skillsCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+              </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              {skills.map(skill => (
-                <div key={skill} className="px-3 py-1.5 bg-[var(--color-dark-900)] border border-[var(--color-dark-border)] rounded-full text-xs text-gray-300 hover:border-[var(--color-brand-500)] transition-colors cursor-default">
-                  {skill}
-                </div>
-              ))}
-              {skills.length === 0 && <span className="text-sm text-gray-500">暂无可用技能</span>}
-            </div>
+            {!skillsCollapsed && (
+              <div className="flex flex-wrap gap-2 mt-4">
+                {skills.map(skill => (
+                  <div
+                    key={skill}
+                    onClick={() => fetchSkillDesc(skill)}
+                    className="px-3 py-1.5 bg-[var(--color-dark-900)] border border-[var(--color-dark-border)] rounded-full text-xs text-gray-300 hover:border-green-400 hover:text-white transition-colors cursor-pointer"
+                  >
+                    {skill}
+                  </div>
+                ))}
+                {skills.length === 0 && <span className="text-sm text-gray-500">暂无可用技能</span>}
+              </div>
+            )}
           </div>
         </aside>
 
-        <main className="lg:col-span-3 flex flex-col bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl overflow-hidden shadow-2xl relative max-h-[75vh]">
-
+        <main className="lg:col-span-3 flex flex-col bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl overflow-hidden shadow-2xl relative max-h-[80vh]">
           <div className="bg-[#010409] px-4 py-3 border-b border-[var(--color-dark-border)] flex items-center justify-between">
             <span className="text-sm text-gray-400 font-semibold tracking-widest">&gt;&gt; TERMINAL OUTPOST</span>
 
@@ -508,6 +677,12 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                 )}
               </div>
             ))}
+            {isWaiting && (
+              <div className="flex items-center gap-2 text-[#8b949e] text-sm animate-pulse p-2">
+                <Loader2 className="w-4 h-4 animate-spin text-[#58a6ff]" />
+                <span>等待核心大脑响应中...</span>
+              </div>
+            )}
           </div>
 
           <div className="p-4 bg-[var(--color-dark-700)] border-t border-[var(--color-dark-border)]">
@@ -518,14 +693,37 @@ function Dashboard({ onAuthFail }: { onAuthFail: () => void }) {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleSend}
+                disabled={isWaiting}
                 placeholder="输入普通对话文字，或以 / 开头下发系统级指令 (如 /new 开启新对话)..."
-                className="w-full bg-[#0d1117] text-[#c9d1d9] border border-[var(--color-dark-border)] rounded-lg py-3 pl-12 pr-4 focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]/50 transition-all placeholder:text-gray-600"
+                className="w-full bg-[#0d1117] text-[#c9d1d9] border border-[var(--color-dark-border)] rounded-lg py-3 pl-12 pr-4 focus:outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]/50 transition-all placeholder:text-gray-600 disabled:opacity-50"
                 autoComplete="off"
               />
             </div>
           </div>
         </main>
       </div>
+
+      {/* Skill Config Modal */}
+      {selectedSkillDesc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-[var(--color-dark-700)] border border-[var(--color-dark-border)] rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="bg-[var(--color-dark-900)] px-4 py-3 border-b border-[var(--color-dark-border)] flex items-center justify-between">
+              <h3 className="text-white font-bold flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-green-400" />
+                技能说明: {selectedSkillDesc.name}
+              </h3>
+              <button onClick={() => setSelectedSkillDesc(null)} className="text-gray-400 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto bg-[#0d1117] flex-1">
+              <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap leading-relaxed">
+                {selectedSkillDesc.content}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

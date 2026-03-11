@@ -21,6 +21,33 @@ class GeminiCliAdapter:
         os.makedirs(self.history_dir, exist_ok=True)
         self._load_session()
 
+    def _cleanup_zombies(self):
+        """Scavenger task: kill any gemini CLI processes that have been running for too long."""
+        try:
+            import subprocess, os, signal
+            result = subprocess.run(
+                ["ps", "-eo", "pid,etimes,command"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines()[1:]:
+                parts = line.strip().split(maxsplit=2)
+                if len(parts) == 3:
+                    pid_str, etimes_str, cmd = parts
+                    if "node" in cmd and "gemini" in cmd:
+                        try:
+                            pid = int(pid_str)
+                            etimes = int(etimes_str)
+                            if "--list-sessions" in cmd and etimes > 60:
+                                logger.warning(f"Zombie Scavenger: Killing stuck --list-sessions PID {pid}, running for {etimes}s")
+                                os.kill(pid, signal.SIGKILL)
+                            elif etimes > 600:
+                                logger.warning(f"Zombie Scavenger: Killing stuck long-running PID {pid}, running for {etimes}s")
+                                os.kill(pid, signal.SIGKILL)
+                        except (ValueError, ProcessLookupError, PermissionError):
+                            pass
+        except Exception as e:
+            logger.error(f"Failed to run zombie scavenger: {e}")
+
     def is_rate_limited(self):
         if os.path.exists(self.rate_limit_lock_file):
             try:
@@ -134,6 +161,7 @@ class GeminiCliAdapter:
 
     async def chat_stream(self, prompt: str, model: str = None):
         """Sends a prompt to the gemini CLI and yields JSONL events."""
+        self._cleanup_zombies()
         lock_fd = await self._acquire_lock_async()
         if self.is_rate_limited():
             logger.warning("System is currently rate-limited (429). Skipping chat_stream.")
@@ -254,6 +282,7 @@ class GeminiCliAdapter:
 
     def chat(self, prompt: str, model: str = None) -> dict:
         """Sends a prompt to the gemini CLI in headless mode synchronously. Used by cron and legacy."""
+        self._cleanup_zombies()
         lock_fd = self._acquire_lock_sync()
         if self.is_rate_limited():
             logger.warning("System is currently rate-limited (429). Skipping chat.")
@@ -277,7 +306,8 @@ class GeminiCliAdapter:
                     encoding="utf-8",
                     errors="replace",
                     check=True,
-                    stdin=subprocess.DEVNULL
+                    stdin=subprocess.DEVNULL,
+                    timeout=300
                 )
                 output = result.stdout.strip()
                 
@@ -328,6 +358,9 @@ class GeminiCliAdapter:
                 
                 return data
                 
+            except subprocess.TimeoutExpired:
+                logger.error(f"Chat subprocess timeout (300s) exceeded for CMD: {' '.join(cmd)}")
+                return {"error": "subprocess timeout", "message": "Command took too long to execute (300s)"}
             except subprocess.CalledProcessError as e:
                 err_text = e.stderr or ""
                 if "429" in err_text or "Quota exceeded" in err_text or "RESOURCE_EXHAUSTED" in err_text:
@@ -338,6 +371,7 @@ class GeminiCliAdapter:
 
     def get_sessions(self):
         """Returns the list of available sessions by calling gemini --list-sessions -o json"""
+        self._cleanup_zombies()
         tracked_file = os.path.join(self.cwd, ".tracked_sessions")
         tracked = set()
         if os.path.exists(tracked_file):
@@ -348,7 +382,11 @@ class GeminiCliAdapter:
                 pass
 
         try:
-            result = subprocess.run(self.cmd_base + ["--list-sessions", "-o", "json"], cwd=self.cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(
+                self.cmd_base + ["--list-sessions", "-o", "json"],
+                cwd=self.cwd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30
+            )
             lines = result.stdout.strip().split("\n")
             sessions = []
             for line in lines:
@@ -360,6 +398,9 @@ class GeminiCliAdapter:
                         if sid_part in tracked:
                             sessions.append({"id": sid_part, "desc": desc_part})
             return sessions
+        except subprocess.TimeoutExpired:
+            logger.error("Error listing sessions: Subprocess timeout (30s) exceeded.")
+            return []
         except Exception as e:
             logger.error(f"Error listing sessions: {e}")
             return []
@@ -429,3 +470,28 @@ class GeminiCliAdapter:
                 pass
         return []
 
+    def delete_session(self, sid):
+        # remove from tracked sessions
+        tracked_file = os.path.join(self.cwd, ".tracked_sessions")
+        if os.path.exists(tracked_file):
+            try:
+                with open(tracked_file, "r") as f:
+                    tracked = set(f.read().splitlines())
+                if sid in tracked:
+                    tracked.remove(sid)
+                    with open(tracked_file, "w") as f:
+                        f.write("\n".join(tracked))
+            except Exception as e:
+                logger.error(f"Failed to untrack session: {e}")
+                
+        # remove history file
+        history_file = self._get_safe_history_path(sid)
+        if history_file and os.path.exists(history_file):
+            try:
+                os.remove(history_file)
+            except Exception as e:
+                logger.error(f"Failed to remove history file: {e}")
+                
+        # if current session, reset it
+        if self.session_id == sid:
+            self.reset_session()

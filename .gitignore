@@ -217,3 +217,7 @@ config.json
 
 service_start_all.shmemory/wallet.json
 memory/credentials.json
+test-ledger/*
+logs/*
+
+.geminiclaw.lock

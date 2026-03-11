@@ -61,7 +61,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="请输入访问密钥"
+                placeholder="请输入访问密钥(默认为claw)"
                 className="w-full bg-[#0d1117] border border-[#30363d] focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff] rounded-2xl py-4 pl-16 pr-6 text-[#c9d1d9] placeholder:text-[#8b949e] transition-all outline-none font-bold tracking-widest"
                 autoFocus
               />

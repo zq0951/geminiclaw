@@ -116,6 +116,12 @@ async def switch_session(request: Request):
     engine.set_session(session_id)
     return {"status": "ok", "session_id": engine.session_id}
 
+@app.delete("/api/v1/sessions/{session_id}", dependencies=[Depends(verify_token)])
+async def delete_session(session_id: str):
+    """Delete a specific session."""
+    engine.delete_session(session_id)
+    return {"status": "ok", "deleted": session_id}
+
 @app.get("/api/v1/sessions/history", dependencies=[Depends(verify_token)])
 async def get_session_history(session_id: str = None):
     """Get history for a specific session."""
