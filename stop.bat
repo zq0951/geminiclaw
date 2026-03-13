@@ -8,19 +8,7 @@ echo ===============================================
 
 echo ^> Stopping Daemon and API processes...
 
-for /f "tokens=2 delims==" %%I in ('wmic process where "name='python.exe' and commandline like '%%src\\\\run_daemon.py%%'" get processid /value 2^>nul') do (
-    if "%%I" NEQ "" (
-        echo Killing run_daemon.py ^(PID: %%I^)
-        taskkill /PID %%I /F /T >nul 2>&1
-    )
-)
-
-for /f "tokens=2 delims==" %%I in ('wmic process where "name='python.exe' and commandline like '%%src\\\\api.py%%'" get processid /value 2^>nul') do (
-    if "%%I" NEQ "" (
-        echo Killing api.py ^(PID: %%I^)
-        taskkill /PID %%I /F /T >nul 2>&1
-    )
-)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and ($_.CommandLine -match 'src[\\/]run_daemon\.py' -or $_.CommandLine -match 'src[\\/]api\.py') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId }"
 
 if exist run_daemon.pid del run_daemon.pid
 if exist api.pid del api.pid
