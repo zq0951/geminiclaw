@@ -59,6 +59,7 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # 映射媒体文件路径，实现即时访问
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+DB_PATH = os.path.join(ROOT_DIR, "memory.db")
 
 if os.path.exists(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
@@ -209,7 +210,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/v1/bounties")
 async def get_bounties():
-    conn = sqlite3.connect("memory.db")
+    # Ensure table exists
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bounties (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            platform TEXT,
+            status TEXT,
+            url TEXT,
+            reward TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM bounties ORDER BY id DESC LIMIT 20")
@@ -235,4 +248,4 @@ async def get_jobs():
 if __name__ == "__main__":
     import uvicorn
     # Optional wrapper to start locally
-    uvicorn.run("api:app", host="0.0.0.0", port=8888, reload=False)
+    uvicorn.run("api:app", host="0.0.0.0", port=8888, reload=True)

@@ -221,3 +221,11 @@ test-ledger/*
 logs/*
 
 .geminiclaw.lock
+
+AGENTS.md
+GEMINI.md
+IDENTITY.md
+MEMORY.md
+SOUL.md
+TOOLS.md
+USER.md

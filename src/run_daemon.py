@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("HeartbeatDaemon")
 
 agent = GeminiCliAdapter()
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory.db")
 
 DEFAULT_PROMPTS = {
     "heartbeat": {
@@ -65,13 +66,24 @@ def heartbeat_task():
     import sqlite3
     active_tasks = []
     try:
-        conn = sqlite3.connect("memory.db")
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bounties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                platform TEXT,
+                status TEXT,
+                url TEXT,
+                reward TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         cursor = conn.cursor()
         cursor.execute("SELECT title, platform FROM bounties WHERE status = 'IN_PROGRESS'")
         active_tasks = cursor.fetchall()
         conn.close()
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Database error in heartbeat_task: {e}")
 
     if active_tasks:
         task_list = ", ".join([f"{t[0]} ({t[1]})" for t in active_tasks])

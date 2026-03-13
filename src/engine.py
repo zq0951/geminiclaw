@@ -9,8 +9,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("GeminiEngine")
 
 class GeminiCliAdapter:
-    def __init__(self, executable_path="/root/.nvm/versions/node/v24.12.0/bin/node /root/.nvm/versions/node/v24.12.0/bin/gemini"):
+    def __init__(self, executable_path=None):
         import shutil
+        import sys
+        if executable_path is None:
+            if sys.platform == "win32":
+                # Look for gemini.cmd on Windows
+                gemini_path = shutil.which("gemini")
+                if not gemini_path:
+                    # Fallback to a common path or just 'gemini'
+                    gemini_path = "gemini"
+                executable_path = gemini_path
+            else:
+                executable_path = "/root/.nvm/versions/node/v24.12.0/bin/node /root/.nvm/versions/node/v24.12.0/bin/gemini"
+
         self.cmd_base = executable_path.split() # 转换为列表以方便 subprocess 使用
         self.cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # geminiclaw root
         self.session_id = None
@@ -23,28 +35,40 @@ class GeminiCliAdapter:
 
     def _cleanup_zombies(self):
         """Scavenger task: kill any gemini CLI processes that have been running for too long."""
+        import sys
         try:
-            import subprocess, os, signal
-            result = subprocess.run(
-                ["ps", "-eo", "pid,etimes,command"],
-                capture_output=True, text=True, timeout=5
-            )
-            for line in result.stdout.splitlines()[1:]:
-                parts = line.strip().split(maxsplit=2)
-                if len(parts) == 3:
-                    pid_str, etimes_str, cmd = parts
-                    if "node" in cmd and "gemini" in cmd:
-                        try:
-                            pid = int(pid_str)
-                            etimes = int(etimes_str)
-                            if "--list-sessions" in cmd and etimes > 60:
-                                logger.warning(f"Zombie Scavenger: Killing stuck --list-sessions PID {pid}, running for {etimes}s")
-                                os.kill(pid, signal.SIGKILL)
-                            elif etimes > 600:
-                                logger.warning(f"Zombie Scavenger: Killing stuck long-running PID {pid}, running for {etimes}s")
-                                os.kill(pid, signal.SIGKILL)
-                        except (ValueError, ProcessLookupError, PermissionError):
-                            pass
+            if sys.platform == "win32":
+                # Windows equivalent using tasklist
+                result = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq node.exe", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=5
+                )
+                # Note: Windows tasklist doesn't easily show start time/elapsed time in a single command like ps.
+                # For now, we skip aggressive killing on Windows or just kill all node processes if they match gemini.
+                # But since we don't have easy elapsed time, we just log.
+                pass 
+            else:
+                import signal
+                result = subprocess.run(
+                    ["ps", "-eo", "pid,etimes,command"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.splitlines()[1:]:
+                    parts = line.strip().split(maxsplit=2)
+                    if len(parts) == 3:
+                        pid_str, etimes_str, cmd = parts
+                        if "node" in cmd and "gemini" in cmd:
+                            try:
+                                pid = int(pid_str)
+                                etimes = int(etimes_str)
+                                if "--list-sessions" in cmd and etimes > 60:
+                                    logger.warning(f"Zombie Scavenger: Killing stuck --list-sessions PID {pid}, running for {etimes}s")
+                                    os.kill(pid, signal.SIGKILL)
+                                elif etimes > 600:
+                                    logger.warning(f"Zombie Scavenger: Killing stuck long-running PID {pid}, running for {etimes}s")
+                                    os.kill(pid, signal.SIGKILL)
+                            except (ValueError, ProcessLookupError, PermissionError):
+                                pass
         except Exception as e:
             logger.error(f"Failed to run zombie scavenger: {e}")
 
@@ -126,34 +150,68 @@ class GeminiCliAdapter:
         logger.info(f"Session manually set to {sid}")
 
     def _acquire_lock_sync(self):
-        import fcntl, time
-        fd = open(self.lock_file, "w")
+        import sys
+        import time
         logger.info("Waiting for engine lock...")
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                logger.info("Engine lock acquired.")
-                return fd
-            except BlockingIOError:
-                time.sleep(1)
+        if sys.platform == "win32":
+            # Simple file-based lock for Windows if msvcrt isn't used
+            # We'll use a directory as an atomic lock or just wait
+            # Actually msvcrt is better
+            import msvcrt
+            fd = open(self.lock_file, "w")
+            while True:
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    logger.info("Engine lock acquired.")
+                    return fd
+                except OSError:
+                    time.sleep(1)
+        else:
+            import fcntl
+            fd = open(self.lock_file, "w")
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    logger.info("Engine lock acquired.")
+                    return fd
+                except BlockingIOError:
+                    time.sleep(1)
 
     async def _acquire_lock_async(self):
-        import fcntl
-        fd = open(self.lock_file, "w")
+        import sys
         logger.info("Waiting for engine lock (async)...")
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                logger.info("Engine lock acquired.")
-                return fd
-            except BlockingIOError:
-                await asyncio.sleep(1)
+        if sys.platform == "win32":
+            import msvcrt
+            fd = open(self.lock_file, "w")
+            while True:
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    logger.info("Engine lock acquired.")
+                    return fd
+                except OSError:
+                    await asyncio.sleep(1)
+        else:
+            import fcntl
+            fd = open(self.lock_file, "w")
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    logger.info("Engine lock acquired.")
+                    return fd
+                except BlockingIOError:
+                    await asyncio.sleep(1)
 
     def _release_lock(self, fd):
         if fd:
-            import fcntl
+            import sys
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                if sys.platform == "win32":
+                    import msvcrt
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_UN)
                 fd.close()
                 logger.info("Engine lock released.")
             except Exception:
